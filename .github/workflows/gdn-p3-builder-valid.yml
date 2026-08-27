@@ -1,0 +1,61 @@
+name: GDN P3 Builder Valid
+
+on:
+  push:
+    branches:
+      - gdn-p3-builder-496
+
+permissions:
+  contents: write
+
+jobs:
+  build-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build issue 496 patch
+        run: python3 tools/gdn_p3_builder.py
+
+      - name: Format Rust
+        run: cargo fmt --all
+
+      - name: Run targeted UDS tests
+        run: cargo test -p cda-comm-uds --lib
+
+      - name: Check core integration
+        run: cargo check -p cda-core
+
+      - name: Clippy changed Rust surface
+        run: cargo clippy -p cda-comm-uds -p cda-core --all-targets -- -D warnings
+
+      - name: Save verified patch blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          targets=(
+            cda-interfaces/src/com_param_handling.rs
+            cda-interfaces/src/datatypes/com_params.rs
+            cda-core/src/diag_kernel/ecumanager.rs
+            cda-core/src/diag_kernel/comparam.rs
+            cda-comm-uds/src/types.rs
+            cda-comm-uds/src/test_helpers.rs
+            cda-comm-uds/src/transport.rs
+            docs/02_requirements/04_communication.rst
+            docs/03_architecture/03_communication/03_uds_communication.rst
+            opensovd-cda.toml
+          )
+          for f in "${targets[@]}"; do
+            mkdir -p ".gdn-patch/$(dirname "$f")"
+            cp "$f" ".gdn-patch/$f"
+          done
+          git checkout -- "${targets[@]}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .gdn-patch
+          if git diff --cached --quiet; then
+            echo "Builder output is already current."
+            exit 0
+          fi
+          git commit -m "chore: [builder-output] verified P3 patch blobs"
+          git push origin HEAD:gdn-p3-builder-496
