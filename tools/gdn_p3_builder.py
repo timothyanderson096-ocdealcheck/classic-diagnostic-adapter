@@ -187,7 +187,10 @@ p3_tests = r'''
 
         let times = send_times.lock().unwrap();
         assert_eq!(times.len(), 2, "{mode:?}: expected one retry");
-        let gap = times[1].duration_since(times[0]);
+        let [first, second] = times.as_slice() else {
+            panic!("{mode:?}: expected exactly two send times");
+        };
+        let gap = second.duration_since(*first);
         assert!(
             gap >= p3,
             "{mode:?}: retry gap {gap:?} was shorter than CP_P3ClientPhys {p3:?}"
