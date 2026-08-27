@@ -38,6 +38,8 @@ pub trait UdsComParams: Send + Sync + 'static {
     #[must_use]
     fn repeat_req_count_app(&self) -> u32;
     #[must_use]
+    fn p3_client_phys(&self) -> Duration;
+    #[must_use]
     fn rc_21_retry_policy(&self) -> RetryPolicy;
     #[must_use]
     fn rc_21_completion_timeout(&self) -> Duration;
