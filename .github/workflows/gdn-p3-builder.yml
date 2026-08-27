@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build-patch:
-    if: ${{ !contains(github.event.head_commit.message, '[builder-output]') }}
+    if: "${{ !contains(github.event.head_commit.message, '[builder-output]') }}"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,15 +38,12 @@ jobs:
                   raise SystemExit(f"{path}: expected {expected} regex matches, found {count}: {pattern!r}")
               p.write_text(new_text)
 
-          # Public UDS com-param capability.
           must_replace(
               "cda-interfaces/src/com_param_handling.rs",
               "    fn repeat_req_count_app(&self) -> u32;\n    #[must_use]\n    fn rc_21_retry_policy(&self) -> RetryPolicy;",
               "    fn repeat_req_count_app(&self) -> u32;\n    #[must_use]\n    fn p3_client_phys(&self) -> Duration;\n    #[must_use]\n    fn rc_21_retry_policy(&self) -> RetryPolicy;",
           )
 
-          # Config model + default. 50 ms follows the recommended default P2 server
-          # timing when no ECU-specific value is available; DB/config values still win.
           must_replace(
               "cda-interfaces/src/datatypes/com_params.rs",
               "    pub repeat_req_count_app: ComParamConfig<u32>,\n\n    /// `RetryPolicy` in case of NRC 0x21 (busy repeat request)",
@@ -58,7 +55,6 @@ jobs:
               "            repeat_req_count_app: ComParamConfig {\n                name: \"CP_RepeatReqCountApp\".to_owned(),\n                value: 2,\n                precedence: ComParamPrecedence::Database,\n            },\n            p3_client_phys: ComParamConfig {\n                name: \"CP_P3ClientPhys\".to_owned(),\n                value: Duration::from_millis(50),\n                precedence: ComParamPrecedence::Database,\n            },\n            rc_21_retry_policy: ComParamConfig {",
           )
 
-          # Store and expose the resolved ECU-specific timing.
           must_replace(
               "cda-core/src/diag_kernel/ecumanager.rs",
               "    pub(in crate::diag_kernel) repeat_req_count_app: u32,\n    pub(in crate::diag_kernel) rc_21_retry_policy: RetryPolicy,",
@@ -80,7 +76,6 @@ jobs:
               "    fn repeat_req_count_app(&self) -> u32 {\n        self.repeat_req_count_app\n    }\n    fn p3_client_phys(&self) -> Duration {\n        self.p3_client_phys\n    }\n    fn rc_21_retry_policy(&self) -> RetryPolicy {",
           )
 
-          # Carry the timing into the UDS send loop.
           must_replace(
               "cda-comm-uds/src/types.rs",
               "pub(crate) struct UdsParameters {\n    pub(crate) timeout_default: Duration,\n    pub(crate) rc_21_retry_policy: RetryPolicy,",
@@ -91,9 +86,6 @@ jobs:
               "                UdsParameters {\n                    timeout_default: ecu.timeout_default(),\n                    rc_21_retry_policy: ecu.rc_21_retry_policy(),",
               "                UdsParameters {\n                    timeout_default: ecu.timeout_default(),\n                    p3_client_phys: ecu.p3_client_phys(),\n                    rc_21_retry_policy: ecu.rc_21_retry_policy(),",
           )
-
-          # Exactly the four CP_RepeatReqCountApp retry paths reset the active timeout
-          # before returning to the outer send loop. Keep NRC 0x21/0x94 timing separate.
           must_regex(
               "cda-comm-uds/src/transport.rs",
               r"(?P<indent>[ ]+)rx_timeout_next = None;\n(?P=indent)continue 'send;",
@@ -110,7 +102,6 @@ jobs:
               "async fn wait_p3_client_phys(ecu_name: &str, delay: Duration) {\n    if delay.is_zero() {\n        return;\n    }\n\n    tracing::debug!(\n        ecu_name,\n        delay = ?delay,\n        \"Waiting CP_P3ClientPhys before application-layer retry\"\n    );\n    cda_interfaces::util::tokio_ext::sleep_for(delay).await;\n}\n\nasync fn await_stale_gateway_task(handle: tokio::task::JoinHandle<()>, ecu_name: &str) {",
           )
 
-          # Test double exposes an explicit P3 delay without slowing unrelated tests.
           must_replace(
               "cda-comm-uds/src/test_helpers.rs",
               "    repeat_req_count_app: u32,\n}",
@@ -133,7 +124,6 @@ jobs:
               "    fn repeat_req_count_app(&self) -> u32 {\n        self.repeat_req_count_app\n    }\n    fn p3_client_phys(&self) -> Duration {\n        self.p3_client_phys\n    }\n    fn rc_21_retry_policy(&self) -> RetryPolicy {",
           )
 
-          # Test-only manager constructor for explicit retry timing.
           must_replace(
               "cda-comm-uds/src/transport.rs",
               "    fn make_manager_no_ecus(gateway: TestGateway) -> UdsManager<TestGateway, TestEcuDb> {",
@@ -238,7 +228,6 @@ jobs:
               p3_tests + "    /// Regression test for the \"immediate retry\" bug observed on offline/answer-\n",
           )
 
-          # Requirements and architecture traceability.
           must_replace(
               "docs/02_requirements/04_communication.rst",
               "       * - CP_RepeatReqCountApp\n         - Repetition of last request in case of timeout, transmission or receive error\n         - 2\n         - Only applies to application layer messages\n       * - CP_RC21Handling",
@@ -260,7 +249,6 @@ jobs:
               "    layer retries (``CP_RepeatReqCountApp``) are independent of any transport-level\n    retries configured by the selected transport. Before each physical application-layer\n    retry, the UDS layer waits ``CP_P3ClientPhys``; NRC 0x21/0x94 retransmissions keep\n    their own independent request-time parameters and are not delayed by P3.\n",
           )
 
-          # Keep the checked-in reference config aligned with the new field.
           must_replace(
               "opensovd-cda.toml",
               "# value = 2\n\n# Addressing mode for sending Tester Present",
