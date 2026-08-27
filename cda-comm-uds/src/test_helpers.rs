@@ -35,6 +35,10 @@ pub(crate) struct TestEcuDb {
     /// receive errors. Defaults to 2 to match the `CP_RepeatReqCountApp`
     /// comparam default.
     repeat_req_count_app: u32,
+    /// Test-only `CP_P3ClientPhys` value. Defaults to zero so unrelated retry
+    /// tests keep their existing runtime; timing-specific tests opt into a
+    /// non-zero delay explicitly.
+    p3_client_phys: Duration,
 }
 
 impl TestEcuDb {
@@ -43,6 +47,7 @@ impl TestEcuDb {
             service_states: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             timeout_default: Duration::from_secs(5),
             repeat_req_count_app: 2,
+            p3_client_phys: Duration::ZERO,
         }
     }
 
@@ -52,6 +57,7 @@ impl TestEcuDb {
             service_states: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             timeout_default,
             repeat_req_count_app: 2,
+            p3_client_phys: Duration::ZERO,
         }
     }
 
@@ -65,6 +71,21 @@ impl TestEcuDb {
             service_states: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             timeout_default,
             repeat_req_count_app,
+            p3_client_phys: Duration::ZERO,
+        }
+    }
+
+    /// Create a test double with explicit application-layer retry timing.
+    pub fn with_app_retry_timing(
+        timeout_default: Duration,
+        repeat_req_count_app: u32,
+        p3_client_phys: Duration,
+    ) -> Self {
+        Self {
+            service_states: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            timeout_default,
+            repeat_req_count_app,
+            p3_client_phys,
         }
     }
 }
@@ -151,6 +172,9 @@ impl UdsComParams for TestEcuDb {
     }
     fn repeat_req_count_app(&self) -> u32 {
         self.repeat_req_count_app
+    }
+    fn p3_client_phys(&self) -> Duration {
+        self.p3_client_phys
     }
     fn rc_21_retry_policy(&self) -> RetryPolicy {
         RetryPolicy::ContinueUntilTimeout
