@@ -10,8 +10,299 @@ permissions:
 
 jobs:
   build-patch:
+    if: ${{ !contains(github.event.head_commit.message, '[builder-output]') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Builder smoke test
-        run: echo "builder ready"
+
+      - name: Build issue 496 patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          def must_replace(path, old, new, expected=1):
+              p = Path(path)
+              text = p.read_text()
+              found = text.count(old)
+              if found != expected:
+                  raise SystemExit(f"{path}: expected {expected} matches, found {found}: {old[:80]!r}")
+              p.write_text(text.replace(old, new, expected))
+
+          def must_regex(path, pattern, repl, expected):
+              p = Path(path)
+              text = p.read_text()
+              new_text, count = re.subn(pattern, repl, text)
+              if count != expected:
+                  raise SystemExit(f"{path}: expected {expected} regex matches, found {count}: {pattern!r}")
+              p.write_text(new_text)
+
+          # Public UDS com-param capability.
+          must_replace(
+              "cda-interfaces/src/com_param_handling.rs",
+              "    fn repeat_req_count_app(&self) -> u32;\n    #[must_use]\n    fn rc_21_retry_policy(&self) -> RetryPolicy;",
+              "    fn repeat_req_count_app(&self) -> u32;\n    #[must_use]\n    fn p3_client_phys(&self) -> Duration;\n    #[must_use]\n    fn rc_21_retry_policy(&self) -> RetryPolicy;",
+          )
+
+          # Config model + default. 50 ms follows the recommended default P2 server
+          # timing when no ECU-specific value is available; DB/config values still win.
+          must_replace(
+              "cda-interfaces/src/datatypes/com_params.rs",
+              "    pub repeat_req_count_app: ComParamConfig<u32>,\n\n    /// `RetryPolicy` in case of NRC 0x21 (busy repeat request)",
+              "    pub repeat_req_count_app: ComParamConfig<u32>,\n\n    /// Minimum delay before repeating a physically addressed application-layer request.\n    #[schemars(schema_with = \"duration_param_schema\")]\n    pub p3_client_phys: ComParamConfig<Duration>,\n\n    /// `RetryPolicy` in case of NRC 0x21 (busy repeat request)",
+          )
+          must_replace(
+              "cda-interfaces/src/datatypes/com_params.rs",
+              "            repeat_req_count_app: ComParamConfig {\n                name: \"CP_RepeatReqCountApp\".to_owned(),\n                value: 2,\n                precedence: ComParamPrecedence::Database,\n            },\n            rc_21_retry_policy: ComParamConfig {",
+              "            repeat_req_count_app: ComParamConfig {\n                name: \"CP_RepeatReqCountApp\".to_owned(),\n                value: 2,\n                precedence: ComParamPrecedence::Database,\n            },\n            p3_client_phys: ComParamConfig {\n                name: \"CP_P3ClientPhys\".to_owned(),\n                value: Duration::from_millis(50),\n                precedence: ComParamPrecedence::Database,\n            },\n            rc_21_retry_policy: ComParamConfig {",
+          )
+
+          # Store and expose the resolved ECU-specific timing.
+          must_replace(
+              "cda-core/src/diag_kernel/ecumanager.rs",
+              "    pub(in crate::diag_kernel) repeat_req_count_app: u32,\n    pub(in crate::diag_kernel) rc_21_retry_policy: RetryPolicy,",
+              "    pub(in crate::diag_kernel) repeat_req_count_app: u32,\n    pub(in crate::diag_kernel) p3_client_phys: Duration,\n    pub(in crate::diag_kernel) rc_21_retry_policy: RetryPolicy,",
+          )
+          must_replace(
+              "cda-core/src/diag_kernel/ecumanager.rs",
+              "            repeat_req_count_app: database\n                .find_com_param(data_protocol_ref, &com_params.uds.repeat_req_count_app)?,\n            rc_21_retry_policy: database",
+              "            repeat_req_count_app: database\n                .find_com_param(data_protocol_ref, &com_params.uds.repeat_req_count_app)?,\n            p3_client_phys: database\n                .find_com_param(data_protocol_ref, &com_params.uds.p3_client_phys)?,\n            rc_21_retry_policy: database",
+          )
+          must_replace(
+              "cda-core/src/diag_kernel/ecumanager.rs",
+              "            repeat_req_count_app: com_params.uds.repeat_req_count_app.value,\n            rc_21_retry_policy: com_params.uds.rc_21_retry_policy.value.clone(),",
+              "            repeat_req_count_app: com_params.uds.repeat_req_count_app.value,\n            p3_client_phys: com_params.uds.p3_client_phys.value,\n            rc_21_retry_policy: com_params.uds.rc_21_retry_policy.value.clone(),",
+          )
+          must_replace(
+              "cda-core/src/diag_kernel/comparam.rs",
+              "    fn repeat_req_count_app(&self) -> u32 {\n        self.repeat_req_count_app\n    }\n    fn rc_21_retry_policy(&self) -> RetryPolicy {",
+              "    fn repeat_req_count_app(&self) -> u32 {\n        self.repeat_req_count_app\n    }\n    fn p3_client_phys(&self) -> Duration {\n        self.p3_client_phys\n    }\n    fn rc_21_retry_policy(&self) -> RetryPolicy {",
+          )
+
+          # Carry the timing into the UDS send loop.
+          must_replace(
+              "cda-comm-uds/src/types.rs",
+              "pub(crate) struct UdsParameters {\n    pub(crate) timeout_default: Duration,\n    pub(crate) rc_21_retry_policy: RetryPolicy,",
+              "pub(crate) struct UdsParameters {\n    pub(crate) timeout_default: Duration,\n    /// Minimum delay before repeating a physically addressed application-layer request.\n    pub(crate) p3_client_phys: Duration,\n    pub(crate) rc_21_retry_policy: RetryPolicy,",
+          )
+          must_replace(
+              "cda-comm-uds/src/transport.rs",
+              "                UdsParameters {\n                    timeout_default: ecu.timeout_default(),\n                    rc_21_retry_policy: ecu.rc_21_retry_policy(),",
+              "                UdsParameters {\n                    timeout_default: ecu.timeout_default(),\n                    p3_client_phys: ecu.p3_client_phys(),\n                    rc_21_retry_policy: ecu.rc_21_retry_policy(),",
+          )
+
+          # Exactly the four CP_RepeatReqCountApp retry paths reset the active timeout
+          # before returning to the outer send loop. Keep NRC 0x21/0x94 timing separate.
+          must_regex(
+              "cda-comm-uds/src/transport.rs",
+              r"(?P<indent>[ ]+)rx_timeout_next = None;\n(?P=indent)continue 'send;",
+              lambda m: (
+                  f"{m.group('indent')}rx_timeout_next = None;\n"
+                  f"{m.group('indent')}wait_p3_client_phys(ecu_name, uds_params.p3_client_phys).await;\n"
+                  f"{m.group('indent')}continue 'send;"
+              ),
+              4,
+          )
+          must_replace(
+              "cda-comm-uds/src/transport.rs",
+              "async fn await_stale_gateway_task(handle: tokio::task::JoinHandle<()>, ecu_name: &str) {",
+              "async fn wait_p3_client_phys(ecu_name: &str, delay: Duration) {\n    if delay.is_zero() {\n        return;\n    }\n\n    tracing::debug!(\n        ecu_name,\n        delay = ?delay,\n        \"Waiting CP_P3ClientPhys before application-layer retry\"\n    );\n    cda_interfaces::util::tokio_ext::sleep_for(delay).await;\n}\n\nasync fn await_stale_gateway_task(handle: tokio::task::JoinHandle<()>, ecu_name: &str) {",
+          )
+
+          # Test double exposes an explicit P3 delay without slowing unrelated tests.
+          must_replace(
+              "cda-comm-uds/src/test_helpers.rs",
+              "    repeat_req_count_app: u32,\n}",
+              "    repeat_req_count_app: u32,\n    /// Test-only `CP_P3ClientPhys` value. Defaults to zero so unrelated retry\n    /// tests keep their existing runtime; timing-specific tests opt into a\n    /// non-zero delay explicitly.\n    p3_client_phys: Duration,\n}",
+          )
+          must_regex(
+              "cda-comm-uds/src/test_helpers.rs",
+              r"(?P<indent>[ ]+)repeat_req_count_app: 2,\n(?P=indent)}",
+              lambda m: f"{m.group('indent')}repeat_req_count_app: 2,\n{m.group('indent')}p3_client_phys: Duration::ZERO,\n{m.group('indent')}}}",
+              2,
+          )
+          must_replace(
+              "cda-comm-uds/src/test_helpers.rs",
+              "            repeat_req_count_app,\n        }\n    }\n}\n\nimpl Default for TestEcuDb {",
+              "            repeat_req_count_app,\n            p3_client_phys: Duration::ZERO,\n        }\n    }\n\n    /// Create a test double with explicit application-layer retry timing.\n    pub fn with_app_retry_timing(\n        timeout_default: Duration,\n        repeat_req_count_app: u32,\n        p3_client_phys: Duration,\n    ) -> Self {\n        Self {\n            service_states: tokio::sync::Mutex::new(std::collections::HashMap::new()),\n            timeout_default,\n            repeat_req_count_app,\n            p3_client_phys,\n        }\n    }\n}\n\nimpl Default for TestEcuDb {",
+          )
+          must_replace(
+              "cda-comm-uds/src/test_helpers.rs",
+              "    fn repeat_req_count_app(&self) -> u32 {\n        self.repeat_req_count_app\n    }\n    fn rc_21_retry_policy(&self) -> RetryPolicy {",
+              "    fn repeat_req_count_app(&self) -> u32 {\n        self.repeat_req_count_app\n    }\n    fn p3_client_phys(&self) -> Duration {\n        self.p3_client_phys\n    }\n    fn rc_21_retry_policy(&self) -> RetryPolicy {",
+          )
+
+          # Test-only manager constructor for explicit retry timing.
+          must_replace(
+              "cda-comm-uds/src/transport.rs",
+              "    fn make_manager_no_ecus(gateway: TestGateway) -> UdsManager<TestGateway, TestEcuDb> {",
+              "    fn make_manager_with_app_retry_timing(\n        gateway: TestGateway,\n        timeout_default: Duration,\n        repeat_req_count_app: u32,\n        p3_client_phys: Duration,\n    ) -> UdsManager<TestGateway, TestEcuDb> {\n        let ecus = Arc::new(HashMap::from_iter([(\n            \"TestECU\".to_string(),\n            RwLock::new(TestEcuDb::with_app_retry_timing(\n                timeout_default,\n                repeat_req_count_app,\n                p3_client_phys,\n            )),\n        )]));\n        UdsManager::new_for_raw_payload_tests(\n            gateway,\n            ecus,\n            FaultConfig::default(),\n            Arc::new(AtomicBool::new(false)),\n        )\n    }\n\n    fn make_manager_no_ecus(gateway: TestGateway) -> UdsManager<TestGateway, TestEcuDb> {",
+          )
+
+          p3_tests = r'''
+    #[derive(Clone, Copy, Debug)]
+    enum AppRetryFailure {
+        Transmission,
+        Receive,
+        ChannelClose,
+        Timeout,
+    }
+
+    async fn assert_app_retry_respects_p3(mode: AppRetryFailure) {
+        let send_times = Arc::new(std::sync::Mutex::new(Vec::<Instant>::new()));
+        let send_times_clone = Arc::clone(&send_times);
+        let call_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let call_count_clone = Arc::clone(&call_count);
+
+        let gateway = TestGateway {
+            send_fn: Arc::new(move |response_tx, _| {
+                send_times_clone.lock().unwrap().push(Instant::now());
+                let attempt = call_count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if attempt == 0 {
+                    match mode {
+                        AppRetryFailure::Transmission => {
+                            return Err(DiagServiceError::SendFailed("simulated".to_owned()));
+                        }
+                        AppRetryFailure::Receive => {
+                            response_tx
+                                .try_send(Err(DiagServiceError::NoResponse(
+                                    "simulated receive error".to_owned(),
+                                )))
+                                .ok();
+                            return Ok(());
+                        }
+                        AppRetryFailure::ChannelClose => return Ok(()),
+                        AppRetryFailure::Timeout => {
+                            park_sender(response_tx.clone());
+                            return Ok(());
+                        }
+                    }
+                }
+
+                let msg = TransportResponse::UdsResponse(ServicePayload {
+                    data: vec![service_ids::SESSION_CONTROL | UDS_ID_RESPONSE_BITMASK, 0x01],
+                    source_address: 0x0001,
+                    target_address: 0x0E00,
+                    new_session: None,
+                    new_security: None,
+                });
+                response_tx.try_send(Ok(Some(msg))).ok();
+                Ok(())
+            }),
+        };
+
+        let p3 = Duration::from_millis(40);
+        let timeout = Duration::from_millis(5);
+        let manager = make_manager_with_app_retry_timing(gateway, timeout, 1, p3);
+        let payload = make_test_payload(service_ids::SESSION_CONTROL, &[0x01]);
+
+        let result = manager
+            .send_with_raw_payload("TestECU", payload, Some(timeout), true)
+            .await;
+        assert!(result.is_ok(), "{mode:?}: expected retry to succeed, got {result:?}");
+
+        let times = send_times.lock().unwrap();
+        assert_eq!(times.len(), 2, "{mode:?}: expected one retry");
+        let gap = times[1].duration_since(times[0]);
+        assert!(
+            gap >= p3,
+            "{mode:?}: retry gap {gap:?} was shorter than CP_P3ClientPhys {p3:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_p3_delay_after_transmission_error() {
+        assert_app_retry_respects_p3(AppRetryFailure::Transmission).await;
+    }
+
+    #[tokio::test]
+    async fn test_p3_delay_after_receive_error() {
+        assert_app_retry_respects_p3(AppRetryFailure::Receive).await;
+    }
+
+    #[tokio::test]
+    async fn test_p3_delay_after_channel_close() {
+        assert_app_retry_respects_p3(AppRetryFailure::ChannelClose).await;
+    }
+
+    #[tokio::test]
+    async fn test_p3_delay_after_timeout() {
+        assert_app_retry_respects_p3(AppRetryFailure::Timeout).await;
+    }
+
+'''
+          must_replace(
+              "cda-comm-uds/src/transport.rs",
+              "    /// Regression test for the \"immediate retry\" bug observed on offline/answer-\n",
+              p3_tests + "    /// Regression test for the \"immediate retry\" bug observed on offline/answer-\n",
+          )
+
+          # Requirements and architecture traceability.
+          must_replace(
+              "docs/02_requirements/04_communication.rst",
+              "       * - CP_RepeatReqCountApp\n         - Repetition of last request in case of timeout, transmission or receive error\n         - 2\n         - Only applies to application layer messages\n       * - CP_RC21Handling",
+              "       * - CP_RepeatReqCountApp\n         - Repetition of last request in case of timeout, transmission or receive error\n         - 2\n         - Only applies to application layer messages\n       * - CP_P3ClientPhys\n         - Minimum delay before repeating a physically addressed application-layer request\n         - 50000\n         - Applied before CP_RepeatReqCountApp retransmissions\n       * - CP_RC21Handling",
+          )
+          must_replace(
+              "docs/02_requirements/04_communication.rst",
+              "    - On timeout, the CDA shall retry the request up to ``CP_RepeatReqCountApp`` times\n      before reporting a failure.\n",
+              "    - On timeout, the CDA shall retry the request up to ``CP_RepeatReqCountApp`` times\n      before reporting a failure.\n    - Before each physically addressed application-layer retransmission caused by a\n      transmission error, receive error, response-channel close, or timeout, the CDA\n      shall wait at least ``CP_P3ClientPhys``.\n",
+          )
+          must_replace(
+              "docs/03_architecture/03_communication/03_uds_communication.rst",
+              "       * - CP_RepeatReqCountApp\n         - Repetition of last request in case of timeout, transmission or receive error\n         - 2\n         - Only applies to application layer messages\n",
+              "       * - CP_RepeatReqCountApp\n         - Repetition of last request in case of timeout, transmission or receive error\n         - 2\n         - Only applies to application layer messages\n       * - CP_P3ClientPhys\n         - Minimum delay before repeating a physically addressed application-layer request\n         - 50000\n         - Applied before CP_RepeatReqCountApp retransmissions\n",
+          )
+          must_replace(
+              "docs/03_architecture/03_communication/03_uds_communication.rst",
+              "    layer retries (``CP_RepeatReqCountApp``) are independent of any transport-level\n    retries configured by the selected transport.\n",
+              "    layer retries (``CP_RepeatReqCountApp``) are independent of any transport-level\n    retries configured by the selected transport. Before each physical application-layer\n    retry, the UDS layer waits ``CP_P3ClientPhys``; NRC 0x21/0x94 retransmissions keep\n    their own independent request-time parameters and are not delayed by P3.\n",
+          )
+
+          # Keep the checked-in reference config aligned with the new field.
+          must_replace(
+              "opensovd-cda.toml",
+              "# value = 2\n\n# Addressing mode for sending Tester Present",
+              "# value = 2\n\n# Minimum delay before repeating a physically addressed application-layer request\n[com_params.uds.p3_client_phys]\n# Communication parameter identifier (`CP_xxx` name from the database).\n# name = \"CP_P3ClientPhys\"\n# precedence = \"Database\"\n\n# Value used when the database does not provide one, or precedence is set to `Config`.\n[com_params.uds.p3_client_phys.value]\n# nanos = 50000000\n# secs = 0\n\n# Addressing mode for sending Tester Present",
+          )
+          PY
+
+      - name: Format Rust
+        run: cargo fmt --all
+
+      - name: Run targeted UDS tests
+        run: cargo test -p cda-comm-uds --lib
+
+      - name: Check core integration
+        run: cargo check -p cda-core
+
+      - name: Clippy changed Rust surface
+        run: cargo clippy -p cda-comm-uds -p cda-core --all-targets -- -D warnings
+
+      - name: Save verified patch blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          targets=(
+            cda-interfaces/src/com_param_handling.rs
+            cda-interfaces/src/datatypes/com_params.rs
+            cda-core/src/diag_kernel/ecumanager.rs
+            cda-core/src/diag_kernel/comparam.rs
+            cda-comm-uds/src/types.rs
+            cda-comm-uds/src/test_helpers.rs
+            cda-comm-uds/src/transport.rs
+            docs/02_requirements/04_communication.rst
+            docs/03_architecture/03_communication/03_uds_communication.rst
+            opensovd-cda.toml
+          )
+          for f in "${targets[@]}"; do
+            mkdir -p ".gdn-patch/$(dirname "$f")"
+            cp "$f" ".gdn-patch/$f"
+          done
+          git checkout -- "${targets[@]}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .gdn-patch
+          git commit -m "chore: [builder-output] verified P3 patch blobs"
+          git push origin HEAD:gdn-p3-builder-496
