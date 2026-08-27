@@ -1,0 +1,17 @@
+name: GDN P3 Builder
+
+on:
+  push:
+    branches:
+      - gdn-p3-builder-496
+
+permissions:
+  contents: write
+
+jobs:
+  build-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Builder smoke test
+        run: echo "builder ready"
