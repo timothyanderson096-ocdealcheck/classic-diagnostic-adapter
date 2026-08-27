@@ -30,6 +30,8 @@ pub(crate) enum ResetType {
 
 pub(crate) struct UdsParameters {
     pub(crate) timeout_default: Duration,
+    /// Minimum delay before repeating a physically addressed application-layer request.
+    pub(crate) p3_client_phys: Duration,
     pub(crate) rc_21_retry_policy: RetryPolicy,
     pub(crate) rc_21_completion_timeout: Duration,
     pub(crate) rc_21_repeat_request_time: Duration,
