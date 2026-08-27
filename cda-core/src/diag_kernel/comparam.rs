@@ -54,6 +54,9 @@ impl<S: SecurityPlugin> cda_interfaces::UdsComParams for EcuManager<S> {
     fn repeat_req_count_app(&self) -> u32 {
         self.repeat_req_count_app
     }
+    fn p3_client_phys(&self) -> Duration {
+        self.p3_client_phys
+    }
     fn rc_21_retry_policy(&self) -> RetryPolicy {
         self.rc_21_retry_policy.clone()
     }
